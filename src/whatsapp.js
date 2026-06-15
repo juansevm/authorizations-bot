@@ -31,7 +31,18 @@ export async function startWhatsApp() {
     log("warn", "==================================================");
     log("warn", "WhatsApp QR — escanea con tu teléfono (WhatsApp → Dispositivos vinculados):");
     log("warn", "==================================================");
+
+    // Opción A: imprime el QR como ASCII (puede no renderizar bien en Railway)
     qrcode.generate(qr, { small: true });
+
+    // Opción B: imprime un link a una imagen del QR (más confiable en consolas web)
+    // Usa la API pública de qrserver.com para renderizar el QR como PNG escaneable
+    const encoded = encodeURIComponent(qr);
+    const imgUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encoded}`;
+    log("warn", "==================================================");
+    log("warn", "Si el QR ASCII no es escaneable, abre este link en tu navegador:");
+    log("warn", imgUrl);
+    log("warn", "==================================================");
   });
 
   client.on("ready", () => {
@@ -68,7 +79,6 @@ async function resolveChatId(destination) {
   const isPhone = /^\+?\d[\d\s\-()]{6,}$/.test(trimmed);
   if (isPhone) {
     const digits = trimmed.replace(/\D/g, "");
-    const wid = `${digits}@c.us`;
     const numId = await client.getNumberId(digits);
     if (!numId) throw new Error(`El número ${trimmed} no tiene WhatsApp`);
     return numId._serialized;
