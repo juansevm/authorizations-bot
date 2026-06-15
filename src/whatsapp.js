@@ -1,5 +1,7 @@
 import wwebjs from "whatsapp-web.js";
 import qrcode from "qrcode-terminal";
+import fs from "fs";
+import path from "path";
 import { config, log } from "./config.js";
 
 const { Client, LocalAuth } = wwebjs;
@@ -10,7 +12,52 @@ const readyPromise = new Promise((resolve) => {
   globalThis.__waReadyResolve = resolve;
 });
 
+/**
+ * Remove any Chromium lock files from the session folder.
+ * Chromium creates these to prevent two processes from using the same profile.
+ * If a process crashes ungracefully (e.g., container restart), the lock stays
+ * and blocks future starts. We clean it on every boot to be safe.
+ */
+function cleanStaleChromiumLocks(sessionPath) {
+  try {
+    if (!fs.existsSync(sessionPath)) return;
+    const filesToRemove = [
+      "SingletonLock",
+      "SingletonCookie",
+      "SingletonSocket",
+      "lockfile",
+      "LOCK",
+    ];
+    function walk(dir) {
+      let entries;
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch (e) {
+        return;
+      }
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+        } else if (filesToRemove.includes(entry.name)) {
+          try {
+            fs.unlinkSync(full);
+            log("info", `Removed stale lock: ${full}`);
+          } catch (e) {
+            log("warn", `Could not remove lock ${full}:`, e.message);
+          }
+        }
+      }
+    }
+    walk(sessionPath);
+  } catch (e) {
+    log("warn", "Lock cleanup error (non-fatal):", e.message);
+  }
+}
+
 export async function startWhatsApp() {
+  cleanStaleChromiumLocks(config.whatsapp.sessionPath);
+
   client = new Client({
     authStrategy: new LocalAuth({ dataPath: config.whatsapp.sessionPath }),
     puppeteer: {
@@ -31,12 +78,8 @@ export async function startWhatsApp() {
     log("warn", "==================================================");
     log("warn", "WhatsApp QR — escanea con tu teléfono (WhatsApp → Dispositivos vinculados):");
     log("warn", "==================================================");
-
-    // Opción A: imprime el QR como ASCII (puede no renderizar bien en Railway)
     qrcode.generate(qr, { small: true });
 
-    // Opción B: imprime un link a una imagen del QR (más confiable en consolas web)
-    // Usa la API pública de qrserver.com para renderizar el QR como PNG escaneable
     const encoded = encodeURIComponent(qr);
     const imgUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encoded}`;
     log("warn", "==================================================");
@@ -69,11 +112,6 @@ export function waitUntilReady() {
   return readyPromise;
 }
 
-/**
- * Find a WhatsApp chat by exact name (group or individual).
- * If `destination` looks like a phone number (starts with + or contains only digits/spaces),
- * resolve to a private chat by phone. Otherwise treat as group name.
- */
 async function resolveChatId(destination) {
   const trimmed = destination.trim();
   const isPhone = /^\+?\d[\d\s\-()]{6,}$/.test(trimmed);
@@ -83,7 +121,6 @@ async function resolveChatId(destination) {
     if (!numId) throw new Error(`El número ${trimmed} no tiene WhatsApp`);
     return numId._serialized;
   }
-  // Group: search by exact name
   const chats = await client.getChats();
   const group = chats.find(
     (c) => c.isGroup && c.name && c.name.trim() === trimmed
@@ -96,9 +133,6 @@ async function resolveChatId(destination) {
   return group.id._serialized;
 }
 
-/**
- * Send a text message to a WhatsApp destination (group name or phone).
- */
 export async function sendText(destination, text) {
   if (!ready) throw new Error("WhatsApp client no está listo todavía");
   const chatId = await resolveChatId(destination);
@@ -106,9 +140,6 @@ export async function sendText(destination, text) {
   log("info", `WA → "${destination}": ${text.slice(0, 80).replace(/\n/g, " ⏎ ")}…`);
 }
 
-/**
- * Send a text message + media (PDF, image) attachment.
- */
 export async function sendMedia(destination, text, mediaBuffer, mimetype, filename) {
   if (!ready) throw new Error("WhatsApp client no está listo todavía");
   const chatId = await resolveChatId(destination);
@@ -118,9 +149,6 @@ export async function sendMedia(destination, text, mediaBuffer, mimetype, filena
   log("info", `WA + media → "${destination}"`);
 }
 
-/**
- * For debugging: list all group chats the account is in.
- */
 export async function listGroups() {
   if (!ready) throw new Error("WhatsApp client no está listo todavía");
   const chats = await client.getChats();
